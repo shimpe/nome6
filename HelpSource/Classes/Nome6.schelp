@@ -1,0 +1,86 @@
+TITLE:: Nome6
+summary:: Six-operator Jacobi elliptic phase-modulation synthesis with an FM7-style matrix
+categories:: UGens>Generators
+related:: Classes/FM7
+
+DESCRIPTION::
+Nome6 is a six-output phase-modulation matrix synthesizer. Its routing model follows FM7: each of six operators may phase-modulate every other operator, including itself, through a 6x6 matrix.
+
+Instead of a sine-only operator, each Nome6 operator uses a frequency-normalized Jacobi elliptic waveform. The code::m:: parameter moves from the sine limit toward increasingly nonlinear elliptic shapes. code::family:: morphs between code::sn:: and peak-normalized code::sd:: families. At code::m = 0:: both families reduce to a sine, so ordinary FM7-style patches can be reproduced with three-field operator rows.
+
+The elliptic waveforms are rendered from truncated Fourier series using the Jacobi nome. This gives explicit bandwidth control and avoids evaluating special functions for every audio sample. Strong PM and feedback may still generate new sidebands, so 2x or 4x internal oversampling can be useful.
+
+CLASSMETHODS::
+
+METHOD:: ar
+
+ARGUMENT:: ctlMatrix
+An array containing six operator rows.
+
+A full row has this form:
+
+code::
+[freq, phase, amp, m, family, bandwidth]
+::
+
+code::freq:: is oscillator frequency in Hz and may be control or audio rate.
+
+code::phase:: is initial phase in radians and is read at initialization only.
+
+code::amp:: is operator amplitude. The amplitude-scaled operator output is also the signal that enters the phase-modulation matrix.
+
+code::m:: is the Jacobi elliptic parameter, clipped to 0..0.999999. At 0 the oscillator is a sine. Values approaching 1 create increasingly strong odd-harmonic structure. Control rate is recommended; audio-rate modulation works but is more CPU-intensive because the nome and Fourier coefficients must be updated when m changes.
+
+code::family:: morphs from frequency-normalized code::sn:: at 0 to peak-normalized code::sd:: at 1. Intermediate values crossfade the two band-limited elliptic series. This parameter is inexpensive to modulate.
+
+code::bandwidth:: is the maximum base-waveform harmonic bandwidth in Hz. Values less than or equal to 0 use the internal anti-alias ceiling. This limits the elliptic oscillator itself; phase modulation may generate additional sidebands.
+
+Three-field rows code::[freq, phase, amp]:: are accepted and expand to code::m = 0::, code::family = 0::, and automatic bandwidth, giving ordinary sine PM operators.
+
+ARGUMENT:: modMatrix
+A 6x6 phase-modulation matrix. Rows are destination operators and columns are source operators. Values are phase-modulation amounts in radians. Diagonal entries produce self-feedback. The complete feedback loop runs at the selected internal oversampling rate.
+
+ARGUMENT:: oversample
+Initialization-rate internal oversampling factor: 1, 2, or 4. Default is 2. 2x and 4x outputs are decimated using cascaded half-band FIR filters.
+
+RETURNS::
+Six audio-rate channels, one for each operator.
+
+EXAMPLES::
+
+code::
+// FM7-style sine PM: m = 0 via three-field rows.
+(
+{
+    var ctl = [
+        [110, 0, 0.45],
+        [220, 0, 0.7],
+        [330, 0, 0.25],
+        [0, 0, 0], [0, 0, 0], [0, 0, 0]
+    ];
+    var mod = Array.fill(6, { Array.fill(6, 0.0) });
+    var op;
+
+    mod[0][1] = 2.1;
+    mod[1][2] = 0.8;
+
+    op = Nome6.ar(ctl, mod, 2);
+    (op[0] * 0.18) ! 2
+}.play;
+)
+::
+
+code::
+// Hear the elliptic parameter and family directly.
+(
+{
+    var m = SinOsc.kr(0.05).range(0.0, 0.995);
+    var family = SinOsc.kr(0.031, 1.2).range(0, 1);
+    var ctl = [
+        [110, 0, 1, m, family, 16000],
+        [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]
+    ];
+    (Nome6.ar(ctl, nil, 2)[0] * 0.15) ! 2
+}.play;
+)
+::
