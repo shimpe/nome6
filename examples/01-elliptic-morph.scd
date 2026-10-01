@@ -1,29 +1,13 @@
-// Nome6 -- unmistakable elliptic A/B/C test.
+// Nome6 -- elliptic morph
 //
-// Every two seconds the first operator switches between:
-//   0: ordinary sine          (m = 0,        family = sn)
-//   1: strongly elliptic sn   (m = 0.999999, family = sn)
-//   2: strongly elliptic sd   (m = 0.999999, family = sd)
-//
-// m/family are audio-rate stepped signals here on purpose. This makes the
-// test independent of control-rate input handling, but because m only changes
-// at the state transitions the expensive elliptic coefficient table is not
-// recomputed continuously.
+// With the Release-build coefficient-update bug fixed, this continuously
+// moves through the strongly audible high-m region and between sn / sd.
+
 (
 {
-    var trig = Impulse.ar(0.5);
-    var state = PulseCount.ar(trig) % 3;
-    var m = Select.ar(state, [
-        DC.ar(0.0),
-        DC.ar(0.999999),
-        DC.ar(0.999999)
-    ]);
-    var family = Select.ar(state, [
-        DC.ar(0.0),
-        DC.ar(0.0),
-        DC.ar(1.0)
-    ]);
-
+    var sweep = LFTri.kr(0.08).range(0, 1);
+    var m = sweep.linexp(0, 1, 0.75, 0.999999);
+    var family = SinOsc.kr(0.047, 0.4).range(0, 1);
     var ctl = [
         [110, 0, 1, m, family, 18000],
         [0, 0, 0],
@@ -32,13 +16,14 @@
         [0, 0, 0],
         [0, 0, 0]
     ];
-
     var op = Nome6.ar(ctl, nil, 2);
 
-    // Print the active state twice per second so the audible change can be
-    // correlated with the parameter state in the post window.
-    Poll.kr(Impulse.kr(0.5), A2K.kr(state), \nome6State);
-
-    LeakDC.ar(op[0] * 0.15) ! 2
+    LeakDC.ar(op[0] * 0.14) ! 2
 }.play;
 )
+
+// Static A/B sanity check:
+// Change the first row between:
+// [110, 0, 1, 0,        0, 18000]   // sine
+// [110, 0, 1, 0.999999, 0, 18000]   // strongly flattened sn
+// [110, 0, 1, 0.999999, 1, 18000]   // pointed normalized sd

@@ -59,6 +59,17 @@ if(BUILD_TESTING)
     foreach(test_name core family oversampling benchmark)
         add_executable(nome6_${test_name}_test tests/${test_name}_test.cpp)
         target_include_directories(nome6_${test_name}_test PRIVATE source)
+        if(MSVC)
+            target_compile_options(nome6_${test_name}_test PRIVATE
+                $<$<CONFIG:Release>:/O2>
+                $<$<CONFIG:Release>:/fp:fast>
+            )
+        else()
+            target_compile_options(nome6_${test_name}_test PRIVATE
+                $<$<CONFIG:Release>:-O3>
+                $<$<CONFIG:Release>:-ffast-math>
+            )
+        endif()
     endforeach()
     add_test(NAME nome6_core_test COMMAND nome6_core_test)
     add_test(NAME nome6_family_test COMMAND nome6_family_test)

@@ -17,6 +17,16 @@ Each operator row is:
 
 Three-field FM7-style rows `[freq, phase, amp]` are accepted and expand to a sine operator (`m = 0`).
 
+
+## Release-build coefficient update fix
+
+Earlier builds used a NaN sentinel to force the first Jacobi coefficient update.
+Because Release builds enable `/fp:fast` on MSVC and `-ffast-math` elsewhere,
+the compiler could legally assume NaNs did not occur and leave every operator
+stuck on the sine-limit coefficient table. Nome6 now uses an explicit validity
+flag instead; the test suite includes an engine-level `m=0` versus `m≈1`
+regression compiled with the same Release floating-point policy.
+
 ## Modulation matrix
 
 `modMatrix` is 6x6. Rows are destinations, columns are sources, and entries are radians of phase modulation. Diagonal entries are self-feedback. Operator-to-operator feedback uses the previous **internal** sample, so the complete matrix loop runs at the selected oversampling rate.

@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <limits>
 
 namespace nome6 {
 
@@ -287,7 +286,8 @@ public:
 
         for (int i = 0; i < kNumOps; ++i) {
             phase_[i] = wrap01(phaseRadians[i] / kTwoPi);
-            lastM_[i] = std::numeric_limits<double>::quiet_NaN();
+            lastM_[i] = 0.0;
+            preparedValid_[i] = false;
             prepareElliptic(0.0, prepared_[i]);
         }
 
@@ -314,9 +314,10 @@ public:
 
         for (int i = 0; i < kNumOps; ++i) {
             const double m = clampd(ctl[i].m, 0.0, 0.999999);
-            if (!(m == lastM_[i])) {
+            if (!preparedValid_[i] || m != lastM_[i]) {
                 prepareElliptic(m, prepared_[i]);
                 lastM_[i] = m;
+                preparedValid_[i] = true;
             }
             rs[i].dPhase = ctl[i].freq / internalSampleRate_;
             rs[i].amp = ctl[i].amp;
@@ -392,6 +393,7 @@ private:
     std::array<double, kNumOps> phase_{};
     std::array<double, kNumOps> prevOut_{};
     std::array<double, kNumOps> lastM_{};
+    std::array<bool, kNumOps> preparedValid_{};
     std::array<PreparedElliptic, kNumOps> prepared_{};
     std::array<HalfbandDecimator2, kNumOps> decim1_{};
     std::array<HalfbandDecimator2, kNumOps> decim2_{};

@@ -31,5 +31,45 @@ int main() {
     }
 
     std::cout << "sine-limit max error=" << maxErr << "\n";
-    return maxErr < 1.0e-6 ? 0 : 1;
+    if (maxErr >= 1.0e-6)
+        return 1;
+
+    // Regression: Release builds use fast floating-point optimizations.  Do
+    // not use NaN as an initialization sentinel: under /fp:fast or
+    // -ffast-math a NaN comparison may be optimized under the assumption that
+    // NaNs never occur, leaving the engine stuck on its sine-limit table.
+    auto renderEngineRms = [](double m) {
+        Engine engine;
+        std::array<double, kNumOps> phase{};
+        engine.configure(48000.0, 1, phase);
+
+        Controls6 ctl{};
+        Matrix6 matrix{};
+        ctl[0].freq = 110.0;
+        ctl[0].amp = 1.0;
+        ctl[0].m = m;
+        ctl[0].family = 0.0;
+        ctl[0].bandwidth = 18000.0;
+
+        std::array<double, kNumOps> y{};
+        double e2 = 0.0;
+        int count = 0;
+        for (int n = 0; n < 4096; ++n) {
+            engine.processHostSample(ctl, matrix, y);
+            if (n >= 128) {
+                e2 += y[0] * y[0];
+                ++count;
+            }
+        }
+        return std::sqrt(e2 / double(count));
+    };
+
+    const double rmsSine = renderEngineRms(0.0);
+    const double rmsElliptic = renderEngineRms(0.999999);
+    std::cout << "engine m=0 rms=" << rmsSine
+              << " m=.999999 rms=" << rmsElliptic << "\n";
+    if (std::abs(rmsElliptic - rmsSine) < 0.05)
+        return 1;
+
+    return 0;
 }
