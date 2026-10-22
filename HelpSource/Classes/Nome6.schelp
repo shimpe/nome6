@@ -59,6 +59,9 @@ SECTION:: Discussion
 SUBSECTION:: Noise routing
 The noise generator is shared by all six operators and runs at the selected internal oversampling rate. Signed per-operator route amounts allow correlated and anti-correlated excitation. Additive noise is useful for breath, bow and attack components; phase noise creates pitch/phase roughness; m-noise creates spectral roughness.
 
+SUBSECTION:: Control-rate inputs
+Control-rate code::freq::, code::amp::, code::noiseAmp:: and code::noisePhase:: fields and control-rate matrix entries are ramped linearly across each block, as in link::Classes/FM7::, so envelopes do not step (and click) at block boundaries. code::m::, code::family::, code::bandwidth:: and code::noiseM:: are held for the block; audio-rate inputs are read every sample.
+
 SUBSECTION:: Performance
 Base code::m:: changes require coefficient preparation. code::noiseM:: is optimized differently: Nome6 prepares the spectra at code::m - abs(noiseM):: and code::m + abs(noiseM):: once per host sample and interpolates their normalized Fourier coefficients using the shared noise value.
 

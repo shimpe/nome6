@@ -78,6 +78,10 @@ The full PM/feedback network is evaluated at the internal rate. 2x and 4x are de
 
 The base elliptic waveform is already explicitly band-limited. Oversampling is most useful for sidebands created by strong PM and feedback.
 
+## Control-rate inputs
+
+Control-rate `freq`, `amp`, `noiseAmp` and `noisePhase` fields and control-rate matrix entries are ramped linearly across each block, from the previous block's value to the new one, as in `FM7`. An envelope therefore rises and falls smoothly instead of in block-sized steps, which would click at the start and the release of a note (most audibly on modulators, where every step jumps the modulation index). `m`, `family`, `bandwidth` and `noiseM` are held for the block; audio-rate inputs are read every sample.
+
 ## Performance notes
 
 - `m` at scalar/control rate is recommended. A changed base `m` requires an AGM/nome/coefficient update. Internal `noiseM` does not recalculate the nome at audio rate; it interpolates precomputed endpoint spectra.

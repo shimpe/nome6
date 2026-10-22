@@ -60,6 +60,10 @@ struct Nome6 : public Unit {
     int numAudioMod = 0;
     bool audioNoiseColor = false;
     bool audioNoiseCutoff = false;
+    // Control-rate values of the previous block (at construction: the initial
+    // values); each block ramps from these to the values it reads.
+    nome6::Controls6 ctl{};
+    nome6::Matrix6 modMatrix{};
 };
 
 inline void readControlRowAtBlockStart(Nome6* unit,
@@ -114,16 +118,42 @@ void Nome6_next(Nome6* unit, int inNumSamples) {
         OUT(0), OUT(1), OUT(2), OUT(3), OUT(4), OUT(5)
     };
 
-    nome6::Controls6 ctl{};
-    nome6::Matrix6 modMatrix{};
+    nome6::Controls6 target{};
+    nome6::Matrix6 targetMatrix{};
     nome6::NoiseControl noiseCtl{};
     std::array<double, nome6::kNumOps> y{};
 
     for (int op = 0; op < nome6::kNumOps; ++op)
-        readControlRowAtBlockStart(unit, ctl, op);
-    readMatrixAtBlockStart(unit, modMatrix);
+        readControlRowAtBlockStart(unit, target, op);
+    readMatrixAtBlockStart(unit, targetMatrix);
     noiseCtl.color = IN0(kNoiseColorInput);
     noiseCtl.cutoff = IN0(kNoiseCutoffInput);
+
+    // Frequency, amplitudes, phase noise and the matrix ramp linearly across
+    // the block from the values of the previous block, as in FM7, so that an
+    // envelope or a modulation index changes smoothly instead of in steps of
+    // a block (which click). The elliptic m, the family, the bandwidth and
+    // the m noise are held for the block: a new m rebuilds the coefficients.
+    const double slope = 1.0 / double(inNumSamples);
+    nome6::Controls6 ctl = unit->ctl;
+    nome6::Controls6 inc{};
+    for (int op = 0; op < nome6::kNumOps; ++op) {
+        ctl[op].m = target[op].m;
+        ctl[op].family = target[op].family;
+        ctl[op].bandwidth = target[op].bandwidth;
+        ctl[op].noiseM = target[op].noiseM;
+        inc[op].freq = (target[op].freq - ctl[op].freq) * slope;
+        inc[op].amp = (target[op].amp - ctl[op].amp) * slope;
+        inc[op].noiseAmp = (target[op].noiseAmp - ctl[op].noiseAmp) * slope;
+        inc[op].noisePhase = (target[op].noisePhase - ctl[op].noisePhase) * slope;
+    }
+
+    nome6::Matrix6 modMatrix = unit->modMatrix;
+    nome6::Matrix6 modInc{};
+    for (int dst = 0; dst < nome6::kNumOps; ++dst) {
+        for (int src = 0; src < nome6::kNumOps; ++src)
+            modInc[dst][src] = (targetMatrix[dst][src] - modMatrix[dst][src]) * slope;
+    }
 
     for (int n = 0; n < inNumSamples; ++n) {
         for (int r = 0; r < unit->numAudioCtl; ++r) {
@@ -140,7 +170,24 @@ void Nome6_next(Nome6* unit, int inNumSamples) {
         unit->engine.processHostSample(ctl, modMatrix, noiseCtl, y);
         for (int op = 0; op < nome6::kNumOps; ++op)
             out[op][n] = float(y[op]);
+
+        // Audio-rate inputs overwrite their field every sample, so stepping
+        // them here as well does no harm.
+        for (int op = 0; op < nome6::kNumOps; ++op) {
+            ctl[op].freq += inc[op].freq;
+            ctl[op].amp += inc[op].amp;
+            ctl[op].noiseAmp += inc[op].noiseAmp;
+            ctl[op].noisePhase += inc[op].noisePhase;
+        }
+        for (int dst = 0; dst < nome6::kNumOps; ++dst) {
+            for (int src = 0; src < nome6::kNumOps; ++src)
+                modMatrix[dst][src] += modInc[dst][src];
+        }
     }
+
+    // The next block starts exactly at the values read now.
+    unit->ctl = target;
+    unit->modMatrix = targetMatrix;
 }
 
 void Nome6_Ctor(Nome6* unit) {
@@ -190,6 +237,14 @@ void Nome6_Ctor(Nome6* unit) {
         seed = 0x6d2b79f5u;
 
     unit->engine.configure(SAMPLERATE, os, phaseRadians, seed);
+
+    // The unit is not constructed by C++, so its arrays start uninitialized:
+    // the first block ramps from the initial values of the inputs.
+    new (&unit->ctl) nome6::Controls6{};
+    new (&unit->modMatrix) nome6::Matrix6{};
+    for (int op = 0; op < nome6::kNumOps; ++op)
+        readControlRowAtBlockStart(unit, unit->ctl, op);
+    readMatrixAtBlockStart(unit, unit->modMatrix);
 
     SETCALC(Nome6_next);
     ClearUnitOutputs(unit, nome6::kNumOps);
