@@ -1,27 +1,34 @@
 Nome6 : MultiOutUGen {
-    *ar { |ctlMatrix, modMatrix, oversample = 2|
+    *ar { |ctlMatrix, modMatrix, oversample = 2, noiseColor = 0, noiseCutoff = 8000|
         var zeroMatrix;
 
         ctlMatrix = ctlMatrix ?? {
-            [0, 0, 0, 0, 0, 0] ! 6
+            [0, 0, 0, 0, 0, 0, 0, 0, 0] ! 6
         };
 
         if(ctlMatrix.size != 6) {
             Error("Nome6 ctlMatrix must contain 6 operator rows").throw;
         };
 
-        // FM7-compatible rows [freq, phase, amp] are accepted.
-        // Full rows are [freq, phase, amp, m, family, bandwidth].
+        // Accepted rows:
+        // [freq, phase, amp]
+        // [freq, phase, amp, m, family, bandwidth]
+        // [freq, phase, amp, m, family, bandwidth,
+        //  noiseAmp, noisePhase, noiseM]
         ctlMatrix = ctlMatrix.collect { |row|
             if(row.size == 3) {
-                row ++ [0, 0, 0]
+                row ++ [0, 0, 0, 0, 0, 0]
             } {
                 if(row.size == 6) {
-                    row
+                    row ++ [0, 0, 0]
                 } {
-                    Error(
-                        "Nome6 operator rows must have 3 (FM7-style) or 6 fields"
-                    ).throw;
+                    if(row.size == 9) {
+                        row
+                    } {
+                        Error(
+                            "Nome6 operator rows must have 3, 6, or 9 fields"
+                        ).throw;
+                    }
                 }
             }
         };
@@ -44,12 +51,12 @@ Nome6 : MultiOutUGen {
             ['audio']
             ++ ctlMatrix.flat
             ++ modMatrix.flat
-            ++ [oversample]
+            ++ [oversample, noiseColor, noiseCutoff]
         )
     }
 
     *numOperators { ^6 }
-    *controlArraySize { ^6 }
+    *controlArraySize { ^9 }
     *modArraySize { ^36 }
 
     init { |...theInputs|

@@ -1,86 +1,85 @@
 TITLE:: Nome6
-summary:: Six-operator Jacobi elliptic phase-modulation synthesis with an FM7-style matrix
+summary:: Six-operator Jacobi elliptic phase-modulation synthesis with shared noise excitation
 categories:: UGens>Generators
 related:: Classes/FM7
 
 DESCRIPTION::
-Nome6 is a six-output phase-modulation matrix synthesizer. Its routing model follows FM7: each of six operators may phase-modulate every other operator, including itself, through a 6x6 matrix.
-
-Instead of a sine-only operator, each Nome6 operator uses a frequency-normalized Jacobi elliptic waveform. The code::m:: parameter moves from the sine limit toward increasingly nonlinear elliptic shapes. code::family:: morphs between code::sn:: and peak-normalized code::sd:: families. At code::m = 0:: both families reduce to a sine, so ordinary FM7-style patches can be reproduced with three-field operator rows.
-
-The elliptic waveforms are rendered from truncated Fourier series using the Jacobi nome. This gives explicit bandwidth control and avoids evaluating special functions for every audio sample. Strong PM and feedback may still generate new sidebands, so 2x or 4x internal oversampling can be useful.
+Nome6 is a six-output phase-modulation matrix synthesizer with frequency-normalized Jacobi elliptic operators. It follows FM7's 6x6 routing model, adds controllable sn/sd elliptic waveform families, and includes one shared filtered noise source that each operator can route independently into output amplitude, phase, and ellipticity.
 
 CLASSMETHODS::
 
 METHOD:: ar
 
 ARGUMENT:: ctlMatrix
-An array containing six operator rows.
+An array of six operator rows.
 
-A full row has this form:
+Full row:
 
 code::
-[freq, phase, amp, m, family, bandwidth]
+[freq, phase, amp, m, family, bandwidth, noiseAmp, noisePhase, noiseM]
 ::
 
-code::freq:: is oscillator frequency in Hz and may be control or audio rate.
+code::freq:: is oscillator frequency in Hz.
 
 code::phase:: is initial phase in radians and is read at initialization only.
 
-code::amp:: is operator amplitude. The amplitude-scaled operator output is also the signal that enters the phase-modulation matrix.
+code::amp:: is oscillator amplitude.
 
-code::m:: is the Jacobi elliptic parameter, clipped to 0..0.999999. At 0 the oscillator is a sine. Values approaching 1 create increasingly strong odd-harmonic structure. Control rate is recommended; audio-rate modulation works but is more CPU-intensive because the nome and Fourier coefficients must be updated when m changes.
+code::m:: is the Jacobi parameter, clipped to 0..0.999999. Zero is the sine limit.
 
-code::family:: morphs from frequency-normalized code::sn:: at 0 to peak-normalized code::sd:: at 1. Intermediate values crossfade the two band-limited elliptic series. This parameter is inexpensive to modulate.
+code::family:: morphs from frequency-normalized code::sn:: at 0 to peak-normalized code::sd:: at 1.
 
-code::bandwidth:: is the maximum base-waveform harmonic bandwidth in Hz. Values less than or equal to 0 use the internal anti-alias ceiling. This limits the elliptic oscillator itself; phase modulation may generate additional sidebands.
+code::bandwidth:: limits the base elliptic waveform in Hz. Values <= 0 use the internal anti-alias ceiling.
 
-Three-field rows code::[freq, phase, amp]:: are accepted and expand to code::m = 0::, code::family = 0::, and automatic bandwidth, giving ordinary sine PM operators.
+code::noiseAmp:: adds the shared filtered noise source to this operator output. This noise also enters the PM matrix when the operator is used as a modulation source.
+
+code::noisePhase:: adds shared-noise phase jitter in radians.
+
+code::noiseM:: gives bipolar shared-noise perturbation depth around code::m::. Nome6 prepares the two endpoint elliptic spectra and interpolates their Fourier coefficients at the internal sample rate, so this does not require special-function recalculation at the noise rate.
+
+Three-field rows code::[freq, phase, amp]:: and legacy six-field rows are accepted. Missing fields default to zero.
 
 ARGUMENT:: modMatrix
-A 6x6 phase-modulation matrix. Rows are destination operators and columns are source operators. Values are phase-modulation amounts in radians. Diagonal entries produce self-feedback. The complete feedback loop runs at the selected internal oversampling rate.
+A 6x6 phase-modulation matrix. Rows are destinations, columns are sources, and values are radians. Diagonal entries are self-feedback.
 
 ARGUMENT:: oversample
-Initialization-rate internal oversampling factor: 1, 2, or 4. Default is 2. 2x and 4x outputs are decimated using cascaded half-band FIR filters.
+Initialization-rate internal oversampling: 1, 2, or 4. Default is 2.
+
+ARGUMENT:: noiseColor
+Shared-noise color from -1 to +1. -1 is low-passed/brown-ish, 0 is white, and +1 is high-passed/bright. Default is 0.
+
+ARGUMENT:: noiseCutoff
+Cutoff/crossover in Hz used by the shared one-pole noise filter. Default is 8000.
 
 RETURNS::
 Six audio-rate channels, one for each operator.
 
+SECTION:: Discussion
+
+SUBSECTION:: Noise routing
+The noise generator is shared by all six operators and runs at the selected internal oversampling rate. Signed per-operator route amounts allow correlated and anti-correlated excitation. Additive noise is useful for breath, bow and attack components; phase noise creates pitch/phase roughness; m-noise creates spectral roughness.
+
+SUBSECTION:: Performance
+Base code::m:: changes require coefficient preparation. code::noiseM:: is optimized differently: Nome6 prepares the spectra at code::m - abs(noiseM):: and code::m + abs(noiseM):: once per host sample and interpolates their normalized Fourier coefficients using the shared noise value.
+
 EXAMPLES::
 
 code::
-// FM7-style sine PM: m = 0 via three-field rows.
+// Breath-like excitation plus subtle phase and ellipticity noise.
 (
 {
+    var breath = EnvGen.kr(Env([0, 1, 0.25], [0.03, 1.0], [3, -4]));
     var ctl = [
-        [110, 0, 0.45],
-        [220, 0, 0.7],
-        [330, 0, 0.25],
-        [0, 0, 0], [0, 0, 0], [0, 0, 0]
-    ];
-    var mod = Array.fill(6, { Array.fill(6, 0.0) });
-    var op;
-
-    mod[0][1] = 2.1;
-    mod[1][2] = 0.8;
-
-    op = Nome6.ar(ctl, mod, 2);
-    (op[0] * 0.18) ! 2
-}.play;
-)
-::
-
-code::
-// Hear the elliptic parameter and family directly.
-(
-{
-    var m = SinOsc.kr(0.05).range(0.0, 0.995);
-    var family = SinOsc.kr(0.031, 1.2).range(0, 1);
-    var ctl = [
-        [110, 0, 1, m, family, 16000],
+        [146.83, 0, 0.65, 0.96, 0.1, 16000,
+            breath * 0.05, breath * 0.03, breath * 0.015],
+        [293.66, 0, 0.25, 0.80, 0.4, 14000, 0, 0.01, 0.008],
         [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]
     ];
-    (Nome6.ar(ctl, nil, 2)[0] * 0.15) ! 2
+    var pm = Array.fill(6, { Array.fill(6, 0.0) });
+    var op;
+    pm[0][1] = 0.45;
+    op = Nome6.ar(ctl, pm, 2, -0.35, 5500);
+    LeakDC.ar((op[0] + (op[1] * 0.1)) * 0.16) ! 2
 }.play;
 )
 ::

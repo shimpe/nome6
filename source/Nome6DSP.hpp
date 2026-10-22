@@ -121,7 +121,7 @@ struct HalfbandDecimator2 {
 };
 
 // Full operator row:
-// [freq, phase, amp, m, family, bandwidth]
+// [freq, phase, amp, m, family, bandwidth, noiseAmp, noisePhase, noiseM]
 // phase is initialization-rate and stored separately by the wrapper.
 struct OpControl {
     double freq = 0.0;
@@ -129,6 +129,16 @@ struct OpControl {
     double m = 0.0;
     double family = 0.0;
     double bandwidth = 0.0;
+    double noiseAmp = 0.0;
+    double noisePhase = 0.0;
+    double noiseM = 0.0;
+};
+
+struct NoiseControl {
+    // -1 = low-passed/brown-ish, 0 = white, +1 = high-passed/bright.
+    double color = 0.0;
+    // One-pole crossover/cutoff in Hz.
+    double cutoff = 8000.0;
 };
 
 using Controls6 = std::array<OpControl, kNumOps>;
@@ -275,11 +285,67 @@ inline double renderElliptic(double phase,
     return lerpd(sn, sd, f);
 }
 
+inline double renderEllipticInterpolated(double phase,
+                                         const PreparedElliptic& lo,
+                                         const PreparedElliptic& hi,
+                                         double t,
+                                         int numPartials,
+                                         double family) {
+    if (numPartials <= 0)
+        return 0.0;
+
+    t = clampd(t, 0.0, 1.0);
+    const double f = clampd(family, 0.0, 1.0);
+    const bool needSn = f < (1.0 - 1.0e-12);
+    const bool needSd = f > 1.0e-12;
+
+    const double loSnNorm = lo.snNorm[numPartials];
+    const double hiSnNorm = hi.snNorm[numPartials];
+    const double loSdNorm = lo.sdNorm[numPartials];
+    const double hiSdNorm = hi.sdNorm[numPartials];
+
+    auto snCoeff = [&](int n) {
+        return lerpd(lo.snCoeff[n] * loSnNorm,
+                     hi.snCoeff[n] * hiSnNorm, t);
+    };
+    auto sdCoeff = [&](int n) {
+        return lerpd(lo.sdCoeff[n] * loSdNorm,
+                     hi.sdCoeff[n] * hiSdNorm, t);
+    };
+
+    const double s1 = fastSin01(phase);
+    double sumSn = needSn ? (snCoeff(0) * s1) : 0.0;
+    double sumSd = needSd ? (sdCoeff(0) * s1) : 0.0;
+
+    if (numPartials > 1) {
+        const double s1sq = s1 * s1;
+        const double cos2 = 1.0 - 2.0 * s1sq;
+        double prev = s1;
+        double cur = s1 * (3.0 - 4.0 * s1sq);
+
+        if (needSn) sumSn += snCoeff(1) * cur;
+        if (needSd) sumSd += sdCoeff(1) * cur;
+
+        for (int n = 2; n < numPartials; ++n) {
+            const double next = 2.0 * cos2 * cur - prev;
+            if (needSn) sumSn += snCoeff(n) * next;
+            if (needSd) sumSd += sdCoeff(n) * next;
+            prev = cur;
+            cur = next;
+        }
+    }
+
+    if (!needSd) return sumSn;
+    if (!needSn) return sumSd;
+    return lerpd(sumSn, sumSd, f);
+}
+
 class Engine {
 public:
     void configure(double hostSampleRate,
                    int oversample,
-                   const std::array<double, kNumOps>& phaseRadians) {
+                   const std::array<double, kNumOps>& phaseRadians,
+                   std::uint32_t noiseSeed = 0x6d2b79f5u) {
         hostSampleRate_ = std::max(1.0, hostSampleRate);
         oversample_ = (oversample >= 4) ? 4 : ((oversample >= 2) ? 2 : 1);
         internalSampleRate_ = hostSampleRate_ * double(oversample_);
@@ -287,20 +353,36 @@ public:
         for (int i = 0; i < kNumOps; ++i) {
             phase_[i] = wrap01(phaseRadians[i] / kTwoPi);
             lastM_[i] = 0.0;
+            lastNoiseMDepth_[i] = 0.0;
             preparedValid_[i] = false;
-            prepareElliptic(0.0, prepared_[i]);
+            prepareElliptic(0.0, preparedBase_[i]);
+            prepareElliptic(0.0, preparedLo_[i]);
+            prepareElliptic(0.0, preparedHi_[i]);
         }
 
         prevOut_.fill(0.0);
         for (auto& d : decim1_) d.reset();
         for (auto& d : decim2_) d.reset();
+
+        rngState_ = noiseSeed ? noiseSeed : 0x6d2b79f5u;
+        noiseLow_ = 0.0;
+        lastNoiseCutoff_ = -1.0;
+        noiseAlpha_ = 1.0;
     }
 
     int oversample() const { return oversample_; }
     double internalSampleRate() const { return internalSampleRate_; }
 
+    // Backward-compatible DSP entry point with noise disabled.
     void processHostSample(const Controls6& ctl,
                            const Matrix6& modMatrix,
+                           std::array<double, kNumOps>& out) {
+        processHostSample(ctl, modMatrix, NoiseControl{}, out);
+    }
+
+    void processHostSample(const Controls6& ctl,
+                           const Matrix6& modMatrix,
+                           const NoiseControl& noiseCtl,
                            std::array<double, kNumOps>& out) {
         out.fill(0.0);
 
@@ -308,24 +390,59 @@ public:
             double dPhase = 0.0;
             double amp = 0.0;
             double family = 0.0;
+            double noiseAmp = 0.0;
+            double noisePhase = 0.0;
+            double noiseM = 0.0;
+            bool useMNoise = false;
             int numPartials = 0;
         };
         std::array<RenderState, kNumOps> rs{};
 
+        bool noiseEnabled = false;
         for (int i = 0; i < kNumOps; ++i) {
             const double m = clampd(ctl[i].m, 0.0, 0.999999);
-            if (!preparedValid_[i] || m != lastM_[i]) {
-                prepareElliptic(m, prepared_[i]);
+            const double mDepth = std::abs(ctl[i].noiseM);
+            const bool useMNoise = mDepth > 1.0e-12;
+
+            if (!preparedValid_[i] || m != lastM_[i] ||
+                mDepth != lastNoiseMDepth_[i]) {
+                if (useMNoise) {
+                    prepareElliptic(clampd(m - mDepth, 0.0, 0.999999),
+                                    preparedLo_[i]);
+                    prepareElliptic(clampd(m + mDepth, 0.0, 0.999999),
+                                    preparedHi_[i]);
+                } else {
+                    prepareElliptic(m, preparedBase_[i]);
+                }
                 lastM_[i] = m;
+                lastNoiseMDepth_[i] = mDepth;
                 preparedValid_[i] = true;
             }
+
             rs[i].dPhase = ctl[i].freq / internalSampleRate_;
             rs[i].amp = ctl[i].amp;
             rs[i].family = ctl[i].family;
+            rs[i].noiseAmp = ctl[i].noiseAmp;
+            rs[i].noisePhase = ctl[i].noisePhase;
+            rs[i].noiseM = ctl[i].noiseM;
+            rs[i].useMNoise = useMNoise;
+
+            const int spectralActive = useMNoise
+                ? std::max(preparedLo_[i].activePartials,
+                           preparedHi_[i].activePartials)
+                : preparedBase_[i].activePartials;
             rs[i].numPartials = std::min(
                 partialCount(ctl[i].freq, ctl[i].bandwidth, internalSampleRate_),
-                prepared_[i].activePartials);
+                spectralActive);
+
+            noiseEnabled = noiseEnabled ||
+                std::abs(rs[i].noiseAmp) > 1.0e-15 ||
+                std::abs(rs[i].noisePhase) > 1.0e-15 ||
+                rs[i].useMNoise;
         }
+
+        updateNoiseFilter(noiseCtl.cutoff);
+        const double noiseColor = clampd(noiseCtl.color, -1.0, 1.0);
 
         struct Route { std::uint8_t dst; std::uint8_t src; double amount; };
         std::array<Route, kNumOps * kNumOps> routes{};
@@ -350,17 +467,32 @@ public:
                 pm[route.dst] += route.amount * prevOut_[route.src];
             }
 
+            const double noise = noiseEnabled ? nextSharedNoise(noiseColor) : 0.0;
+
             for (int i = 0; i < kNumOps; ++i) {
-                const double readPhase = wrap01(phase_[i] + pm[i] / kTwoPi);
+                const double phaseNoise = rs[i].noisePhase * noise;
+                const double readPhase = wrap01(
+                    phase_[i] + (pm[i] + phaseNoise) / kTwoPi);
 
-                if (std::abs(rs[i].amp) <= 1.0e-15 || rs[i].numPartials <= 0) {
-                    next[i] = 0.0;
-                } else {
-                    const double wave = renderElliptic(
-                        readPhase, prepared_[i], rs[i].numPartials, rs[i].family);
-                    next[i] = wave * rs[i].amp;
+                double value = rs[i].noiseAmp * noise;
+                if (std::abs(rs[i].amp) > 1.0e-15 && rs[i].numPartials > 0) {
+                    double wave = 0.0;
+                    if (rs[i].useMNoise) {
+                        double n = noise;
+                        if (rs[i].noiseM < 0.0)
+                            n = -n;
+                        const double t = 0.5 * (clampd(n, -1.0, 1.0) + 1.0);
+                        wave = renderEllipticInterpolated(
+                            readPhase, preparedLo_[i], preparedHi_[i], t,
+                            rs[i].numPartials, rs[i].family);
+                    } else {
+                        wave = renderElliptic(
+                            readPhase, preparedBase_[i], rs[i].numPartials,
+                            rs[i].family);
+                    }
+                    value += wave * rs[i].amp;
                 }
-
+                next[i] = value;
                 phase_[i] = wrap01(phase_[i] + rs[i].dPhase);
             }
 
@@ -386,6 +518,39 @@ public:
     }
 
 private:
+    inline double nextWhite() {
+        std::uint32_t x = rngState_;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        rngState_ = x ? x : 0x6d2b79f5u;
+        // Use the top 24 bits to produce a stable bipolar float-like value.
+        const double u = double((rngState_ >> 8) & 0x00ffffffu) /
+                         double(0x007fffffu);
+        return u - 1.0;
+    }
+
+    void updateNoiseFilter(double cutoff) {
+        const double maxCutoff = internalSampleRate_ * 0.45;
+        const double c = clampd(std::abs(cutoff), 5.0, maxCutoff);
+        if (c != lastNoiseCutoff_) {
+            noiseAlpha_ = 1.0 - std::exp(-kTwoPi * c / internalSampleRate_);
+            lastNoiseCutoff_ = c;
+        }
+    }
+
+    double nextSharedNoise(double color) {
+        const double white = nextWhite();
+        noiseLow_ += noiseAlpha_ * (white - noiseLow_);
+        const double high = white - noiseLow_;
+        double y = white;
+        if (color < 0.0)
+            y = lerpd(white, noiseLow_, -color);
+        else if (color > 0.0)
+            y = lerpd(white, high, color);
+        return clampd(y, -1.0, 1.0);
+    }
+
     double hostSampleRate_ = 48000.0;
     double internalSampleRate_ = 48000.0;
     int oversample_ = 1;
@@ -393,10 +558,17 @@ private:
     std::array<double, kNumOps> phase_{};
     std::array<double, kNumOps> prevOut_{};
     std::array<double, kNumOps> lastM_{};
+    std::array<double, kNumOps> lastNoiseMDepth_{};
     std::array<bool, kNumOps> preparedValid_{};
-    std::array<PreparedElliptic, kNumOps> prepared_{};
+    std::array<PreparedElliptic, kNumOps> preparedBase_{};
+    std::array<PreparedElliptic, kNumOps> preparedLo_{};
+    std::array<PreparedElliptic, kNumOps> preparedHi_{};
     std::array<HalfbandDecimator2, kNumOps> decim1_{};
     std::array<HalfbandDecimator2, kNumOps> decim2_{};
-};
 
+    std::uint32_t rngState_ = 0x6d2b79f5u;
+    double noiseLow_ = 0.0;
+    double lastNoiseCutoff_ = -1.0;
+    double noiseAlpha_ = 1.0;
+};
 } // namespace nome6

@@ -1,12 +1,23 @@
 # Nome6 examples
 
-- `00-fm7-compatible.scd` - ordinary sine PM using three-field FM7-style rows.
-- `01-elliptic-morph.scd` - isolates `m` and the `sn` to normalized-`sd` family morph.
-- `02-reed-ish.scd` - odd-rich elliptic operators used as a reed-like spectral prior.
-- `03-brass-ish.scd` - envelopes the elliptic parameter with the note attack.
-- `04-inharmonic-bell.scd` - irrational ratios plus elliptic operators and PM.
-- `05-feedback.scd` - self-feedback and cyclic feedback at 4x internal oversampling.
+- `00-fm7-compatible.scd` - sine-limit compatibility using three-field rows.
+- `01-elliptic-morph.scd` - direct `m` and `sn`/`sd` family morph.
+- `02-reed-ish.scd` - reed-like patch with shared breath excitation, phase jitter, and subtle `m` roughness.
+- `03-brass-ish.scd` - brass-like patch with a restrained noisy attack.
+- `04-inharmonic-bell.scd` - irrational ratios and elliptic PM for struck-metal spectra.
+- `05-feedback.scd` - PM/self-feedback exploration.
+- `06-noise-excitation.scd` - focused demo of the three shared-noise routing modes.
 
-For real-time polyphony, start with 2x oversampling. Use 4x when feedback or modulation is aggressive and CPU allows it.
+Full operator row:
 
-`m` is best treated as a scalar/control-rate timbral parameter. Audio-rate `m` works, but changing it requires rebuilding elliptic Fourier coefficients and is therefore significantly more expensive than audio-rate modulation of `freq`, `amp`, `family`, or the PM matrix.
+```supercollider
+[freq, phase, amp, m, family, bandwidth, noiseAmp, noisePhase, noiseM]
+```
+
+The global call is:
+
+```supercollider
+Nome6.ar(ctl, pm, oversample, noiseColor, noiseCutoff)
+```
+
+Old three-field and six-field rows still work; their noise routes default to zero.

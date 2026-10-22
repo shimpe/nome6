@@ -1,6 +1,4 @@
-// Nome6 -- brass-ish patch.
-// The main operator's m follows the amplitude contour so the base waveform
-// itself brightens during the attack, reducing how much PM is needed.
+// Nome6 -- brass-ish patch with restrained attack noise.
 (
 SynthDef(\nomeBrass, { |out = 0, freq = 110, amp = 0.15, gate = 1|
     var env = EnvGen.kr(Env.adsr(0.025, 0.22, 0.78, 0.55), gate, doneAction: 2);
@@ -9,10 +7,14 @@ SynthDef(\nomeBrass, { |out = 0, freq = 110, amp = 0.15, gate = 1|
     var ctl, pm, op, sig;
 
     ctl = [
-        [freq,        0, env,        m,    0.05, 17000],
-        [freq * 1.00, 0, env * 0.35, 0.72, 0.30, 15000],
-        [freq * 2.00, 0, env * 0.18, 0.62, 0.65, 13000],
-        [freq * 3.00, 0, env * 0.10, 0.50, 0.15, 11000],
+        [freq,        0, env,        m,    0.05, 17000,
+            attack * 0.018, attack * 0.012, attack * 0.010],
+        [freq * 1.00, 0, env * 0.35, 0.72, 0.30, 15000,
+            0, attack * 0.006, attack * 0.004],
+        [freq * 2.00, 0, env * 0.18, 0.62, 0.65, 13000,
+            0, 0, 0],
+        [freq * 3.00, 0, env * 0.10, 0.50, 0.15, 11000,
+            0, 0, 0],
         [0, 0, 0],
         [0, 0, 0]
     ];
@@ -22,7 +24,7 @@ SynthDef(\nomeBrass, { |out = 0, freq = 110, amp = 0.15, gate = 1|
     pm[0][2] = attack * 0.25;
     pm[1][2] = 0.22;
 
-    op = Nome6.ar(ctl, pm, 2);
+    op = Nome6.ar(ctl, pm, 2, 0.15, 7500);
     sig = op[0] + (op[1] * 0.10) + (op[3] * 0.03);
     sig = LeakDC.ar(sig) * amp;
     Out.ar(out, sig ! 2);

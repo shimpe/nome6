@@ -9,21 +9,27 @@ static InterfaceTable* ft;
 
 namespace {
 
-constexpr int kCtlFields = 6;
+constexpr int kCtlFields = 9;
 constexpr int kCtlBase = 0;
-constexpr int kModMatrixBase = nome6::kNumOps * kCtlFields; // 36
-constexpr int kOversampleInput = kModMatrixBase + nome6::kNumOps * nome6::kNumOps; // 72
-constexpr int kMaxAudioCtlRoutes = nome6::kNumOps * 5; // phase is init-rate
+constexpr int kModMatrixBase = nome6::kNumOps * kCtlFields; // 54
+constexpr int kOversampleInput = kModMatrixBase + nome6::kNumOps * nome6::kNumOps; // 90
+constexpr int kNoiseColorInput = kOversampleInput + 1; // 91
+constexpr int kNoiseCutoffInput = kOversampleInput + 2; // 92
+constexpr int kMaxAudioCtlRoutes = nome6::kNumOps * 8; // phase is init-rate
 constexpr int kMaxAudioMatrixRoutes = nome6::kNumOps * nome6::kNumOps;
 
-// ctl row: [freq, phase, amp, m, family, bandwidth]
+// ctl row:
+// [freq, phase, amp, m, family, bandwidth, noiseAmp, noisePhase, noiseM]
 enum CtlField {
     kFreq = 0,
     kPhase = 1,
     kAmp = 2,
     kM = 3,
     kFamily = 4,
-    kBandwidth = 5
+    kBandwidth = 5,
+    kNoiseAmp = 6,
+    kNoisePhase = 7,
+    kNoiseM = 8
 };
 
 inline int ctlIndex(int op, CtlField field) {
@@ -52,16 +58,21 @@ struct Nome6 : public Unit {
     std::array<AudioMatrixRoute, kMaxAudioMatrixRoutes> audioMod{};
     int numAudioCtl = 0;
     int numAudioMod = 0;
+    bool audioNoiseColor = false;
+    bool audioNoiseCutoff = false;
 };
 
 inline void readControlRowAtBlockStart(Nome6* unit,
                                        nome6::Controls6& ctl,
                                        int op) {
-    ctl[op].freq      = IN0(ctlIndex(op, kFreq));
-    ctl[op].amp       = IN0(ctlIndex(op, kAmp));
-    ctl[op].m         = IN0(ctlIndex(op, kM));
-    ctl[op].family    = IN0(ctlIndex(op, kFamily));
-    ctl[op].bandwidth = IN0(ctlIndex(op, kBandwidth));
+    ctl[op].freq       = IN0(ctlIndex(op, kFreq));
+    ctl[op].amp        = IN0(ctlIndex(op, kAmp));
+    ctl[op].m          = IN0(ctlIndex(op, kM));
+    ctl[op].family     = IN0(ctlIndex(op, kFamily));
+    ctl[op].bandwidth  = IN0(ctlIndex(op, kBandwidth));
+    ctl[op].noiseAmp   = IN0(ctlIndex(op, kNoiseAmp));
+    ctl[op].noisePhase = IN0(ctlIndex(op, kNoisePhase));
+    ctl[op].noiseM     = IN0(ctlIndex(op, kNoiseM));
 }
 
 inline void setAudioControl(nome6::Controls6& ctl,
@@ -69,12 +80,15 @@ inline void setAudioControl(nome6::Controls6& ctl,
                             double value) {
     auto& c = ctl[route.op];
     switch (CtlField(route.field)) {
-    case kFreq:      c.freq = value; break;
-    case kAmp:       c.amp = value; break;
-    case kM:         c.m = value; break;
-    case kFamily:    c.family = value; break;
-    case kBandwidth: c.bandwidth = value; break;
-    case kPhase:     break;
+    case kFreq:       c.freq = value; break;
+    case kAmp:        c.amp = value; break;
+    case kM:          c.m = value; break;
+    case kFamily:     c.family = value; break;
+    case kBandwidth:  c.bandwidth = value; break;
+    case kNoiseAmp:   c.noiseAmp = value; break;
+    case kNoisePhase: c.noisePhase = value; break;
+    case kNoiseM:     c.noiseM = value; break;
+    case kPhase:      break;
     }
 }
 
@@ -102,11 +116,14 @@ void Nome6_next(Nome6* unit, int inNumSamples) {
 
     nome6::Controls6 ctl{};
     nome6::Matrix6 modMatrix{};
+    nome6::NoiseControl noiseCtl{};
     std::array<double, nome6::kNumOps> y{};
 
     for (int op = 0; op < nome6::kNumOps; ++op)
         readControlRowAtBlockStart(unit, ctl, op);
     readMatrixAtBlockStart(unit, modMatrix);
+    noiseCtl.color = IN0(kNoiseColorInput);
+    noiseCtl.cutoff = IN0(kNoiseCutoffInput);
 
     for (int n = 0; n < inNumSamples; ++n) {
         for (int r = 0; r < unit->numAudioCtl; ++r) {
@@ -115,7 +132,12 @@ void Nome6_next(Nome6* unit, int inNumSamples) {
         }
         updateAudioMatrix(unit, modMatrix, n);
 
-        unit->engine.processHostSample(ctl, modMatrix, y);
+        if (unit->audioNoiseColor)
+            noiseCtl.color = IN(kNoiseColorInput)[n];
+        if (unit->audioNoiseCutoff)
+            noiseCtl.cutoff = IN(kNoiseCutoffInput)[n];
+
+        unit->engine.processHostSample(ctl, modMatrix, noiseCtl, y);
         for (int op = 0; op < nome6::kNumOps; ++op)
             out[op][n] = float(y[op]);
     }
@@ -150,13 +172,24 @@ void Nome6_Ctor(Nome6* unit) {
         }
     }
 
+    unit->audioNoiseColor = (INRATE(kNoiseColorInput) == calc_FullRate);
+    unit->audioNoiseCutoff = (INRATE(kNoiseCutoffInput) == calc_FullRate);
+
     std::array<double, nome6::kNumOps> phaseRadians{};
     for (int op = 0; op < nome6::kNumOps; ++op)
         phaseRadians[op] = IN0(ctlIndex(op, kPhase));
 
     const float osIn = IN0(kOversampleInput);
     const int os = (osIn >= 3.0f) ? 4 : ((osIn >= 1.5f) ? 2 : 1);
-    unit->engine.configure(SAMPLERATE, os, phaseRadians);
+
+    // Pointer-derived seed decorrelates simultaneous Nome6 instances without
+    // adding another user-facing input. The DSP tests pass an explicit seed.
+    std::uint32_t seed = std::uint32_t(
+        reinterpret_cast<std::uintptr_t>(unit) ^ std::uintptr_t(0x9e3779b9u));
+    if (seed == 0u)
+        seed = 0x6d2b79f5u;
+
+    unit->engine.configure(SAMPLERATE, os, phaseRadians, seed);
 
     SETCALC(Nome6_next);
     ClearUnitOutputs(unit, nome6::kNumOps);

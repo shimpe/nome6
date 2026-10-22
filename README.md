@@ -2,10 +2,10 @@
 
 `Nome6` is a six-operator SuperCollider UGen inspired by the routing model of `FM7`, but its operators are frequency-normalized Jacobi elliptic oscillators instead of sine-only oscillators.
 
-Each operator row is:
+Each full operator row is:
 
 ```supercollider
-[freq, phase, amp, m, family, bandwidth]
+[freq, phase, amp, m, family, bandwidth, noiseAmp, noisePhase, noiseM]
 ```
 
 - `freq` - frequency in Hz.
@@ -14,8 +14,11 @@ Each operator row is:
 - `m` - Jacobi parameter, `0 .. 0.999999`. `0` is the sine limit; values toward `1` produce increasingly strong odd-harmonic structure.
 - `family` - `0` = frequency-normalized `sn`, `1` = peak-normalized `sd`; intermediate values morph between them.
 - `bandwidth` - base elliptic-waveform harmonic bandwidth in Hz. `<= 0` uses the internal anti-alias ceiling.
+- `noiseAmp` - additive amount of the shared filtered noise source at this operator output. Because operator outputs feed the PM matrix, this can also inject noise into downstream modulation paths.
+- `noisePhase` - shared-noise phase jitter in radians.
+- `noiseM` - bipolar perturbation depth around `m`. Nome6 prepares the two endpoint elliptic spectra once per host sample and interpolates their Fourier coefficients at the internal rate, avoiding AGM/nome recalculation at the noise rate.
 
-Three-field FM7-style rows `[freq, phase, amp]` are accepted and expand to a sine operator (`m = 0`).
+Three-field FM7-style rows `[freq, phase, amp]` and legacy six-field elliptic rows are accepted; missing noise fields default to zero.
 
 
 ## Release-build coefficient update fix
@@ -26,6 +29,24 @@ the compiler could legally assume NaNs did not occur and leave every operator
 stuck on the sine-limit coefficient table. Nome6 now uses an explicit validity
 flag instead; the test suite includes an engine-level `m=0` versus `m≈1`
 regression compiled with the same Release floating-point policy.
+
+## Shared noise source
+
+The extended call is:
+
+```supercollider
+Nome6.ar(ctlMatrix, modMatrix, oversample: 2, noiseColor: 0, noiseCutoff: 8000)
+```
+
+All six operators receive the same internally generated noise sample, with independent signed routing amounts in their rows. `noiseColor` ranges from `-1` (low-passed / brown-ish) through `0` (white) to `+1` (high-passed / bright). `noiseCutoff` sets the one-pole crossover/cutoff in Hz. The noise generator and its routing run at the selected internal oversampling rate.
+
+The three routes are intentionally different:
+
+- `noiseAmp` adds excitation/noise directly to the operator output.
+- `noisePhase` creates phase/pitch roughness.
+- `noiseM` creates spectral roughness by moving through ellipticity space.
+
+Because the source is shared, signed routes can create correlated or anti-correlated excitation across operators.
 
 ## Modulation matrix
 
@@ -59,7 +80,7 @@ The base elliptic waveform is already explicitly band-limited. Oversampling is m
 
 ## Performance notes
 
-- `m` at scalar/control rate is recommended. A changed `m` requires an AGM/nome/coefficient update.
+- `m` at scalar/control rate is recommended. A changed base `m` requires an AGM/nome/coefficient update. Internal `noiseM` does not recalculate the nome at audio rate; it interpolates precomputed endpoint spectra.
 - `family` is cheap to modulate, including at audio rate.
 - Silent operators skip waveform evaluation.
 - The PM matrix is collapsed to active routes once per host sample and reused across oversampling substeps.
@@ -96,4 +117,6 @@ The standalone DSP tests cover:
 - quarter-cycle normalization,
 - audible distinction between the `sn` and normalized-`sd` families,
 - finite and level-consistent 1x/2x/4x rendering,
+- shared additive/phase/ellipticity noise routing,
+- shared-source correlation,
 - a six-operator feedback benchmark.
